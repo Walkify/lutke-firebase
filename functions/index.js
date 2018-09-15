@@ -58,6 +58,10 @@ directionsToSMS = (directions) => {
   return messages
 }
 
+getName = (phoneNumber) => {
+  return "Jerry"
+}
+
 // Route Handlers ------------------------------------------------
 app.use(bodyParser.urlencoded({ extended: false }));
 
@@ -65,6 +69,7 @@ app.post('/sms', async (req, res) => {
   const twiml = new MessagingResponse();
 
   var msgBody = req.body.Body
+  var fromNumber = req.body.From
   var splitMsg = msgBody.split("=>")
   var fromLocation = splitMsg[0].split(' ').join("%20")
   var toLocation = splitMsg[1].split(' ').join("%20")
@@ -74,23 +79,20 @@ app.post('/sms', async (req, res) => {
 
   let reply = await coordsToDirections(fromCoords, toCoords)
 
-  //console.log(directions[0]["steps"])
+  userName = getName(fromNumber)
 
-  //var tmpCoords = {Latitude: 45.42055, Longitude: -75.69269}
-
-  // parsedDuration = reply["duration"]/60
-  // var parsedDuation = Math.round(reply["duration"]/60);
-
-  welcomeMessage = `\nHey there, Welcome to Walkify! 🚶 \nYour trip today should take about ${Math.round(reply["duration"]/60)} minutes.`
+  welcomeMessage = `\nHey there ${userName},\n🚶 Welcome to Walkify 🚶 \n\nYour trip today should take about ${Math.round(reply["duration"]/60)} minutes.`
   twiml.message(welcomeMessage)
 
   messages = directionsToSMS(reply["directions"])
-  console.log(messages)
 
+  // Send the directions themselves as a series of messages.
   for (i = 0; i < messages.length; i++) {
     content = `Message #${i+1}/${messages.length}\n\n${messages[i]}`
     twiml.message(content)
   } 
+
+  twiml.message("Don't feel like walking? Too far?\n\n🚗Catch a Ride Instead!🚗\n\nReply UBER to order an Uber")
 
   res.writeHead(200, {'Content-Type': 'text/xml'});
   res.end(twiml.toString());
