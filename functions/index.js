@@ -5,13 +5,32 @@ const bodyParser = require('body-parser');
 const fetch = require("node-fetch");
 const app = express();
 
- // Gloabals ----------------------------------------------------
-const GEOCODER_APP_ID = "Lpl5KD8pKl3ricGxOAiV"
-const GEOCODER_APP_CODE = "_u7OtzJaYftqN3-mJlcTGw"
-const ORS_API_KEY = "5b3ce3597851110001cf62488da273b200ab4e2aa5124035dbe68e13"
-const MAX_MESSAGE_LENGTH = 100
+// Firebase Config ---------------------------------------------
+var admin = require("firebase-admin");
+var serviceAccount = require("./walkify-50afe-firebase-adminsdk-dmhwq-3fdfa8972b.json");
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+  databaseURL: "https://walkify-50afe.firebaseio.com"
+});
+
+let db = admin.database();
+let dbRef = db.ref("users");
+let ref = db.ref();
+let usersRef = ref.child("users");
+
+
+ // Globals ----------------------------------------------------
+const GEOCODER_APP_ID = process.env.GEOCODER_APP_ID;
+const GEOCODER_APP_CODE = process.env.GEOCODER_APP_CODE
+const ORS_API_KEY = process.env.ORS_API_KEY
+const UBER_SERVER_TOKEN = process.env.UBER_API_KEY
+const UBER_API_URL = "https://sandbox-api.uber.com/v1.2"
+const MAX_MESSAGE_LENGTH = 110  // Determines the maximum characters in a message (Set to 140 in production)
+
+console.log(GEOCODER_APP_CODE)
 
  // Helpers -----------------------------------------------------
+
  /**
   * Takes address, hits the HERE.com geocoder API, returns coordinates.
   * @param {*} address 
@@ -28,7 +47,6 @@ let addressToCoords = async (address) => {
  */
 coordsToDirections = async (fromCoords, toCoords) => {
   query = `https://api.openrouteservice.org/directions?api_key=${ORS_API_KEY}&coordinates=${fromCoords["Longitude"]},${fromCoords["Latitude"]}|${toCoords["Longitude"]},${toCoords["Latitude"]}&profile=foot-walking`
-  console.log(query)
   let response = await fetch(`https://api.openrouteservice.org/directions?api_key=${ORS_API_KEY}&coordinates=${fromCoords["Longitude"]},${fromCoords["Latitude"]}|${toCoords["Longitude"]},${toCoords["Latitude"]}&profile=foot-walking`)
   let json = await response.json()
   let directions = json["routes"][0]["segments"]
@@ -58,44 +76,166 @@ directionsToSMS = (directions) => {
   return messages
 }
 
-getName = (phoneNumber) => {
-  return "Jerry"
+getUberToken = (phoneNumber) => {
+  return "aV2-ngv_423bZyLlNBfZ6iUEVoDNESdN"
+}
+
+/**
+ * Hits the Uber API and gets a cost quote (Defaults to UberX)
+ */
+getCostQuote = async (fromCoords, toCoords) => {
+  const settings = {"Authorization": `Token ${UBER_SERVER_TOKEN}`, "Accept-Language": "en_US", "Content-Type":"application/json"}
+  let response = await fetch(`${UBER_API_URL}/estimates/price?start_longitude=${fromCoords["Longitude"]}&end_latitude=${toCoords["Latitude"]}&end_longitude=${toCoords["Longitude"]}&start_latitude=${fromCoords["Latitude"]}`, {headers: settings})
+  // Parse response to get Cost estimate
+  let json = await response.json()
+  let uberX =  json.prices.find( el => el.localized_display_name === 'UberX')
+
+  return uberX.estimate
+}
+
+/**
+ * Hits the Uber API and gets a time estimate.
+ */
+getTimeQuote = async (fromCoords) => {
+  const settings = {"Authorization":  `Token ${UBER_SERVER_TOKEN}`, "Accept-Language": "en_US", "Content-Type":"application/json"}
+  let response = await fetch(`${UBER_API_URL}/estimates/time?start_longitude=${fromCoords["Longitude"]}&start_latitude=${fromCoords["Latitude"]}`, {headers: settings})
+  // Parse response to get time estimate
+  let json = await response.json()
+  let uberX = json.times.find( el => el.localized_display_name === 'UberX')
+
+  return uberX.estimate
+}
+
+/**
+ * 
+ */
+getUberEstimate = async (fromCoords, toCoords, ClientToken) => {
+  const settings = {"Authorization":  `Bearer ${ClientToken}`, "Content-Type":"application/json"}
+  let response = await fetch(`${UBER_API_URL}/requests/estimate?start_longitude=${fromCoords["Longitude"]}&start_latitude=${fromCoords["Latitude"]}&end_longitude=${toCoords["Longitude"]}&end_latitude=${toCoords["Latitude"]}`, {method: 'POST', headers: settings})
+  let json = await response.json()
+  let fareID = json.fare.fare_id
+  return fareID
+}
+
+requestUber = async (fromCoords, toCoords, ClientToken, fareID) => {
+  const settings = {"Authorization":  `Bearer ${ClientToken}`, "Content-Type":"application/json"}
+  let response = await fetch(`${UBER_API_URL}/requests?start_longitude=${fromCoords["Longitude"]}&start_latitude=${fromCoords["Latitude"]}&end_longitude=${toCoords["Longitude"]}&end_latitude=${toCoords["Latitude"]}&fare_id=${fareID}`, {method: 'POST', headers: settings})
+  let json = await response.json()
+  let fairID = json.fare.fare_id
+  return fairID
+}
+
+writeUserData = (userId, name, email, imageUrl) => {
+    firebase.database().ref('users/' + userId).set({
+      username: name,
+      email: email,
+      profile_picture : imageUrl
+    });
+  }
+
+function updateState(userID, newState){
+    var updates = {}
+    updates["/users/" + userID + "/state"] = newState
+    admin.database().ref().update(updates); 
+    return admin.database().ref().update(updates);
+}
+
+function updateToFrom(userID, toCoords, fromCoords){
+    var updates = {}
+    updates["/users/" + userID + "/to"] = toCoords
+    updates["/users/" + userID + "/from"] = fromCoords
+    admin.database().ref().update(updates); 
+    return admin.database().ref().update(updates);
 }
 
 // Route Handlers ------------------------------------------------
 app.use(bodyParser.urlencoded({ extended: false }));
 
 app.post('/sms', async (req, res) => {
-  const twiml = new MessagingResponse();
+    const twiml = new MessagingResponse();
 
-  var msgBody = req.body.Body
-  var fromNumber = req.body.From
-  var splitMsg = msgBody.split("=>")
-  var fromLocation = splitMsg[0].split(' ').join("%20")
-  var toLocation = splitMsg[1].split(' ').join("%20")
+// if(sender.toFrom == null) {
+    let msgBody = req.body.Body
+    let fromNumber = req.body.From
 
-  let fromCoords = await addressToCoords(fromLocation)
-  let toCoords = await addressToCoords(toLocation)
+    dbRef.once('value')
+        .then(function (snap) {
+            console.log(snap.val())
+            return snap.val();
+        })
+        .then(async function (userList) {
+            // execute code when we get the return from the previous ".then()"
+            // set the message for Twilio, using the argument
+            let users = Object.keys(userList) 
+            let inList = -1
+            for(i = 0; i < users.length; i++){
+                if(userList[users[i]]["phoneNumber"] == fromNumber){
+                    inList = i
+                    break
+                    // Send all the shit and update state
+                }
+            }
 
-  let reply = await coordsToDirections(fromCoords, toCoords)
+            if(inList != -1){
 
-  userName = getName(fromNumber)
+                if ((userList[users[inList]]["state"] == "UBER") && ((msgBody == "UBER") || (msgBody=="🚗") )){
+                    // State is UBER and message is UBER: call uber and set state to confirm
+                    let gc_id =(users[inList])
+                    toCoords = userList[gc_id]["to"]
+                    fromCoords = userList[gc_id]["from"]
+                    let timeQuote = await getTimeQuote(fromCoords)
+                    timeQuote /= 60
+                    let costQuote = await getCostQuote(fromCoords, toCoords)
+                    twiml.message(`The Uber will cost about ${costQuote} and it should be be here in about ${timeQuote} minutes. Still interested? Reply CONFIRM or 👍 to confirm.`)
+                    updateState(gc_id, "CONFIRM")
+                }
 
-  welcomeMessage = `\nHey there ${userName},\n🚶 Welcome to Walkify 🚶 \n\nYour trip today should take about ${Math.round(reply["duration"]/60)} minutes.`
-  twiml.message(welcomeMessage)
+                else if ((userList[users[inList]]["state"] == "CONFIRM") && ((msgBody == "CONFIRM") || (msgBody == "👍"))){
+                    // The customer wants to order the Uber!
+                    twiml.message("Your ride is on its way!")
+                    let gc_id =(users[inList])
+                    updateState(gc_id, "")
+                    updateToFrom(gc_id, "", "")
+                }
 
-  messages = directionsToSMS(reply["directions"])
+                else{
+                    
+                    let splitMsg = msgBody.split("=>")
+                    let fromLocation = splitMsg[0].split(' ').join("%20");
+                    let toLocation = splitMsg[1].split(' ').join("%20");
+                    let fromCoords = await addressToCoords(fromLocation);
+                    let toCoords = await addressToCoords(toLocation);
+                    let reply = await coordsToDirections(fromCoords, toCoords);
+                    let userName = userList[users[inList]]["full_name"];
+                    let firstName = userName.split(' ')[0];
 
-  // Send the directions themselves as a series of messages.
-  for (i = 0; i < messages.length; i++) {
-    content = `Message #${i+1}/${messages.length}\n\n${messages[i]}`
-    twiml.message(content)
-  } 
+                    welcomeMessage = `\nHey there ${firstName},\n🚶 Welcome to Walkify 🚶 \n\nYour trip today should take about ${Math.round(reply["duration"]/60)} minutes.`
+                    twiml.message(welcomeMessage)
+                    messages = directionsToSMS(reply["directions"]);
 
-  twiml.message("Don't feel like walking? Too far?\n\n🚗Catch a Ride Instead!🚗\n\nReply UBER to order an Uber")
+                    for (let j = 0; j < messages.length; j++) {
+                        content = `Directions Part ${j+1} of ${messages.length}:\n${messages[j]}`
+                        twiml.message(content)
+                    } 
 
-  res.writeHead(200, {'Content-Type': 'text/xml'});
-  res.end(twiml.toString());
+                    twiml.message("Don't feel like walking? Too far?\n\n🚗Catch an Uber Instead!🚗\n\nReply UBER or 🚗 and we'll get you a ride!")
+
+                    // set state to UBER
+                    let gc_id = (users[inList])
+                    console.log("gc_id: ", gc_id)
+                    updateState(gc_id, "UBER")
+                    updateToFrom(gc_id, toCoords, fromCoords)
+                }
+
+            }else{
+                twiml.message("I haven't seen you before! Go register for the service at Walkify.com!")
+            }
+
+            // respond to Twilio
+            res.writeHead(200, { 'Content-Type': 'text/xml' });
+            res.end(twiml.toString());
+    });
+    
 });
 
 http.createServer(app).listen(1337, () => {
