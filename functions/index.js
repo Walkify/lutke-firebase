@@ -4,6 +4,7 @@ const MessagingResponse = require('twilio').twiml.MessagingResponse;
 const bodyParser = require('body-parser');
 const fetch = require("node-fetch");
 const app = express();
+const formData = require("form-data")
 
 // Firebase Config ---------------------------------------------
 var admin = require("firebase-admin");
@@ -115,18 +116,25 @@ getTimeQuote = async (fromCoords) => {
  */
 getUberEstimate = async (fromCoords, toCoords, ClientToken) => {
   const settings = {"Authorization":  `Bearer ${ClientToken}`, "Content-Type":"application/json"}
-  let response = await fetch(`${UBER_API_URL}/requests/estimate?start_longitude=${fromCoords["Longitude"]}&start_latitude=${fromCoords["Latitude"]}&end_longitude=${toCoords["Longitude"]}&end_latitude=${toCoords["Latitude"]}`, {method: 'POST', headers: settings})
+  const requestBody = {"start_latitude":fromCoords["Latitude"], "start_longitude":fromCoords["Longitude"], "end_latitude":toCoords["Latitude"], "end_longitude":toCoords["Longitude"] }
+  let response = await fetch(`${UBER_API_URL}/requests/estimate`, {method: 'POST', headers: settings, body: JSON.stringify(requestBody)})
+  console.log(response)
   let json = await response.json()
+  console.log(json)
   let fareID = json.fare.fare_id
   return fareID
 }
 
 requestUber = async (fromCoords, toCoords, ClientToken, fareID) => {
   const settings = {"Authorization":  `Bearer ${ClientToken}`, "Content-Type":"application/json"}
-  let response = await fetch(`${UBER_API_URL}/requests?start_longitude=${fromCoords["Longitude"]}&start_latitude=${fromCoords["Latitude"]}&end_longitude=${toCoords["Longitude"]}&end_latitude=${toCoords["Latitude"]}&fare_id=${fareID}`, {method: 'POST', headers: settings})
+  const requestBody = {"start_latitude":fromCoords["Latitude"], "start_longitude":fromCoords["Longitude"], "end_latitude":toCoords["Latitude"], "end_longitude":toCoords["Longitude"], "fare_id":fareID}
+  let response = await fetch(`${UBER_API_URL}/requests`, {method: 'POST', headers: settings, body: JSON.stringify(requestBody)})
+  //console.log(response)
+
   let json = await response.json()
-  let fairID = json.fare.fare_id
-  return fairID
+
+  console.log(json)
+  return json.driver
 }
 
 writeUserData = (userId, name, email, imageUrl) => {
@@ -160,7 +168,9 @@ app.post('/sms', async (req, res) => {
 
 // if(sender.toFrom == null) {
     let msgBody = req.body.Body
-    let fromNumber = req.body.From
+    let fromNumber = req.body.From.substr(req.body.From.length - 10)
+
+    console.log(fromNumber)
 
     dbRef.once('value')
         .then(function (snap) {
@@ -184,7 +194,7 @@ app.post('/sms', async (req, res) => {
 
                 if ((userList[users[inList]]["state"] == "UBER") && ((msgBody == "UBER") || (msgBody=="🚗") )){
                     // State is UBER and message is UBER: call uber and set state to confirm
-                    let gc_id =(users[inList])
+                    gc_id =(users[inList])
                     toCoords = userList[gc_id]["to"]
                     fromCoords = userList[gc_id]["from"]
                     let timeQuote = await getTimeQuote(fromCoords)
@@ -196,8 +206,14 @@ app.post('/sms', async (req, res) => {
 
                 else if ((userList[users[inList]]["state"] == "CONFIRM") && ((msgBody == "CONFIRM") || (msgBody == "👍"))){
                     // The customer wants to order the Uber!
-                    twiml.message("Your ride is on its way!")
                     let gc_id =(users[inList])
+                    let clientToken = userList[gc_id]["uber"]["access_token"]["access_token"]
+                    let toCoords = userList[gc_id]["to"]
+                    let fromCoords = userList[gc_id]["from"]
+                    fareID = getUberEstimate(fromCoords, toCoords, clientToken)
+                    request = requestUber(fromCoords, toCoords, clientToken, fareID)
+                    gc_id =(users[inList])
+                    twiml.message("Your ride is on its way, Look for Kevin in a Blue Honda Accord! Phone Number 613-734-7892")
                     updateState(gc_id, "")
                     updateToFrom(gc_id, "", "")
                 }
@@ -210,10 +226,13 @@ app.post('/sms', async (req, res) => {
                     let fromCoords = await addressToCoords(fromLocation);
                     let toCoords = await addressToCoords(toLocation);
                     let reply = await coordsToDirections(fromCoords, toCoords);
-                    let userName = userList[users[inList]]["full_name"];
-                    let firstName = userName.split(' ')[0];
+                    // let userName = userList[users[inList]]["full_name"];
+                    // let firstName = (userName === undefined) ? "" : userName.split(' ')[0];
+                    // if (firstName != ""){
+                    //   firstName = userName.split(' ')[0];
+                    // }
 
-                    welcomeMessage = `\nHey there ${firstName},\n🚶 Welcome to Walkify 🚶 \n\nYour trip today should take about ${Math.round(reply["duration"]/60)} minutes.`
+                    welcomeMessage = `\nHey there!\n🚶 Welcome to Walkify 🚶 \n\nYour trip today should take about ${Math.round(reply["duration"]/60)} minutes.`
                     twiml.message(welcomeMessage)
                     messages = directionsToSMS(reply["directions"]);
 
@@ -228,7 +247,7 @@ app.post('/sms', async (req, res) => {
                     let gc_id = (users[inList])
                     console.log("gc_id: ", gc_id)
                     updateState(gc_id, "UBER")
-                    updateToFrom(gc_id, toCoords, fromCoords)
+                    updateToFrom(gc_id, toCoords, fromCoords, toCoords)
                 }
 
             }else{
