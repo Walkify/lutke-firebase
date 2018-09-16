@@ -23,11 +23,15 @@ let usersRef = ref.child("users");
 const GEOCODER_APP_ID = process.env.GEOCODER_APP_ID;
 const GEOCODER_APP_CODE = process.env.GEOCODER_APP_CODE
 const ORS_API_KEY = process.env.ORS_API_KEY
-const UBER_SERVER_TOKEN = process.env.UBER_API_KEY
+const UBER_SERVER_TOKEN = process.env.UBER_SERVER_TOKEN
 const UBER_API_URL = "https://sandbox-api.uber.com/v1.2"
 const MAX_MESSAGE_LENGTH = 110  // Determines the maximum characters in a message (Set to 140 in production)
 
 console.log(GEOCODER_APP_CODE)
+console.log(GEOCODER_APP_ID)
+console.log(ORS_API_KEY)
+console.log(UBER_SERVER_TOKEN)
+
 
  // Helpers -----------------------------------------------------
 
